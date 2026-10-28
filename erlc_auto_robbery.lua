@@ -1,6 +1,6 @@
 -- Severe Luau | ERLC Auto Robbery (memory build) v3
 -- Reads gui state straight from memory because Severe does not expose Gui properties.
--- Defaults are for Roblox version-9ac8595712b447a7 (offsets.imtheo.lol).
+-- Defaults are for Roblox version-5a21b87bbc2641cf (offsets.imtheo.lol).
 -- If erlc_offsets.txt exists (written by erlc_offset_finder.lua) it overrides them.
 -- Run order: finder once after a Roblox update -> this script.
 
@@ -8,11 +8,11 @@ local DEBUG = true
 local MOUSE_OFFSET_X, MOUSE_OFFSET_Y = 0, 0
 
 local OFFSETS = {
-    VIS = 0x594, VISBIT = 0x100,          -- Visible is the byte at 0x595 -> bit 8 of the dword at 0x594
+    VIS = 0x574, VISBIT = 0x100,          -- Visible is the byte at 0x575 -> bit 8 of the dword at 0x574
     POSX = 0xf4, POSY = 0xf8,             -- GuiBase2D::AbsolutePosition
     SIZEX = 0xfc, SIZEY = 0x100,          -- guess: size sits right after position (site says 0x0, unreliable)
-    TEXT = 0xe38,
-    COLR = 0xee8, COLG = 0xeec, COLB = 0xef0,
+    TEXT = 0xe08,
+    COLR = 0xeb8, COLG = 0xebc, COLB = 0xec0,
 }
 
 ------------------------------------------------------------------ helpers
