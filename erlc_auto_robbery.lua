@@ -81,8 +81,11 @@ end
 local function textOf(inst) return rstr(inst, OFFSETS.TEXT) end
 
 local function isBlack(inst)
-    local r, g, b = f32(inst, OFFSETS.COLR), f32(inst, OFFSETS.COLG), f32(inst, OFFSETS.COLB)
-    return r ~= nil and r < 0.02 and g < 0.02 and b < 0.02
+    -- read red first; only the highlighted cell is black, so most checks cost one memory read
+    local r = f32(inst, OFFSETS.COLR)
+    if r == nil or r >= 0.02 then return false end
+    local g, b = f32(inst, OFFSETS.COLG), f32(inst, OFFSETS.COLB)
+    return g ~= nil and b ~= nil and g < 0.02 and b < 0.02
 end
 
 local VPW, VPH = 1920, 1080
@@ -123,6 +126,9 @@ end
 local pl = { hist = {}, lastClick = 0, waitStop = nil,
              LEAD = 0.040, TOL = 2.0, STOP = 1.5, COOLDOWN = 0.25, WINDOW = 0.15 }
 
+pl.PRECISE = true      -- true = compute the exact crossing moment and click then; false = old per-frame check
+pl.LAT = 0.0           -- seconds to click EARLY (raise if clicks land after the line, negative if before)
+pl.SPIN_MAX = 0.06     -- only time a click this far ahead (s); farther than this we wait a frame
 pl.SETTLE = 0.5        -- line must be on screen and still for this long before we arm
 pl.MAX_SPEED = 3000    -- px/s; anything faster is a UI tween or a bad read, never a pin
 local function plReset() pl.hist, pl.lastClick, pl.waitStop = {}, 0, nil; pl.stableSince, pl.lastLineY = nil, nil end
@@ -200,11 +206,29 @@ local function stepLockpick(root)
         local moving = math.abs(v) * pl.WINDOW > pl.STOP and math.abs(v) < pl.MAX_SPEED
         if moving and #p.h >= 3 then
             local d = p.y - line
-            local pred = p.y + v * pl.LEAD
-            if d * (pred - line) <= 0 or math.abs(d) <= pl.TOL then
-                mouse1click()
-                pl.lastClick = now
-                print(string.format("[lockpick] CLICK d=%.1f v=%.0f pinY=%.1f line=%.1f", d, v, p.y, line))
+            -- direction must have been steady over the last few samples (no turnaround in progress)
+            local steady = true
+            local n = #p.h
+            for i = n - 2, n do
+                if i >= 2 and (p.h[i].y - p.h[i - 1].y) * v <= 0 then steady = false end
+            end
+            if pl.PRECISE and steady and d * v < 0 then
+                local eta = -d / v                       -- seconds until the pin reaches the line
+                if eta <= pl.SPIN_MAX then
+                    local tClick = now + eta - pl.LAT
+                    while os.clock() < tClick do end     -- short spin, never longer than SPIN_MAX
+                    mouse1click()
+                    pl.lastClick = os.clock()
+                    print(string.format("[lockpick] CLICK precise d=%.1f v=%.0f eta=%.0fms", d, v, eta * 1000))
+                end
+                -- else: crossing still far away, check again next frame
+            else
+                local pred = p.y + v * pl.LEAD
+                if d * (pred - line) <= 0 or math.abs(d) <= pl.TOL then
+                    mouse1click()
+                    pl.lastClick = now
+                    print(string.format("[lockpick] CLICK d=%.1f v=%.0f pinY=%.1f line=%.1f", d, v, p.y, line))
+                end
             end
             return   -- only ever aim at the leftmost moving pin
         end
@@ -212,7 +236,25 @@ local function stepLockpick(root)
 end
 
 ------------------------------------------------------------------ ATM
-local atm = { lastClick = 0, COOLDOWN = 0.30 }
+-- The highlight sweeps every cell in order (~13 cells/s, some cells lit for only ~35ms).
+-- Checking the whole grid once per frame can miss a short flash, so: find the cell(s) showing the
+-- target code ONCE, then poll just those every frame with a short spin to catch brief flashes.
+local atm = { lastClick = 0, COOLDOWN = 0.15, SPIN = 0.025, target = nil, cells = {}, builtAt = 0 }
+
+local function atmRebuild(cycle, target)
+    atm.cells = {}
+    for _, list in ipairs(cycle:GetChildren()) do
+        if list.ClassName == "Frame" then
+            for _, lbl in ipairs(list:GetChildren()) do
+                if lbl.ClassName == "TextLabel" and textOf(lbl) == target then
+                    atm.cells[#atm.cells + 1] = lbl
+                end
+            end
+        end
+    end
+    atm.target, atm.builtAt = target, os.clock()
+end
+
 local function stepATM(root)
     local hack = root:FindFirstChild("Hacking"); if not hack then return end
     local cycle = hack:FindFirstChild("CycleFrame")
@@ -220,18 +262,30 @@ local function stepATM(root)
     if not (cycle and sel) then return end
     local target = textOf(sel)
     if not target or target == "" then return end
-    if os.clock() - atm.lastClick < atm.COOLDOWN then return end
-    for _, list in ipairs(cycle:GetChildren()) do
-        if list.ClassName == "Frame" then
-            for _, lbl in ipairs(list:GetChildren()) do
-                if lbl.ClassName == "TextLabel" and isBlack(lbl) and textOf(lbl) == target then
-                    mouse1click()
-                    atm.lastClick = os.clock()
-                    return
-                end
-            end
+
+    local now = os.clock()
+    -- re-find the cell often: if the game rebuilds the grid, saved cells would go stale
+    if target ~= atm.target or #atm.cells == 0 or now - atm.builtAt > 0.4 then
+        local changed = target ~= atm.target
+        atmRebuild(cycle, target)
+        if changed or #atm.cells == 0 then
+            dbg("atmcells", string.format("[atm] target=%s cells found=%d", target, #atm.cells), changed and 0 or 1)
         end
     end
+    if #atm.cells == 0 then return end
+    if now - atm.lastClick < atm.COOLDOWN then return end
+
+    local deadline = now + atm.SPIN
+    repeat
+        for _, lbl in ipairs(atm.cells) do
+            if isBlack(lbl) then
+                mouse1click()
+                atm.lastClick = os.clock()
+                print("[atm] CLICK " .. target)
+                return
+            end
+        end
+    until os.clock() >= deadline
 end
 
 ------------------------------------------------------------------ car (crowbar)
